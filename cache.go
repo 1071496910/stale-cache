@@ -11,32 +11,64 @@ var (
 	ErrKeyTimeout error = fmt.Errorf("Key timeout")
 )
 
-type StaleCacheOpOpts func(*StaleCacheEntry)
+type staleCacheOpOpts func(*staleCacheEntry)
 
-type StaleCacheEntry struct {
+type staleCacheEntry struct {
 	key     interface{}
 	val     interface{}
 	dealine time.Time
 }
 
-func WithTimeout(t time.Duration) StaleCacheOpOpts {
-	return func(sce *StaleCacheEntry) {
+func WithTimeout(t time.Duration) staleCacheOpOpts {
+	return func(sce *staleCacheEntry) {
 		sce.dealine = time.Now().Add(t)
 	}
 }
 
 type StaleCache interface {
-	Add(key, val interface{}, opts ...StaleCacheOpOpts) error
+	Add(key, val interface{}, opts ...staleCacheOpOpts) error
 	Del(key interface{}) error
 	Get(key interface{}) (interface{}, error)
 }
 
 type staleCache struct {
-	cache map[interface{}]*StaleCacheEntry
-	mtx   sync.Mutex
+	cache        map[interface{}]*staleCacheEntry
+	mtx          sync.Mutex
+	scanInterval time.Duration
 }
 
-func (sc *staleCache) Add(key, val interface{}, opts ...StaleCacheOpOpts) error {
+func (sc *staleCache) start() {
+
+	go func() {
+		ticker := time.NewTicker(sc.scanInterval)
+		for _ = range ticker.C {
+			sc.mtx.Lock()
+		scanLoop:
+			for key, val := range sc.cache {
+				select {
+				case <-time.After(10 * time.Millisecond):
+					break scanLoop
+				default:
+					if time.Now().After(val.dealine) {
+						delete(sc.cache, key)
+					}
+				}
+			}
+			sc.mtx.Unlock()
+		}
+	}()
+}
+
+func NewStaleCache(scanInterval time.Duration) StaleCache {
+	sc := &staleCache{
+		cache:        make(map[interface{}]*staleCacheEntry),
+		scanInterval: scanInterval,
+	}
+	sc.start()
+	return sc
+}
+
+func (sc *staleCache) Add(key, val interface{}, opts ...staleCacheOpOpts) error {
 	sc.mtx.Lock()
 	defer sc.mtx.Unlock()
 
@@ -44,7 +76,7 @@ func (sc *staleCache) Add(key, val interface{}, opts ...StaleCacheOpOpts) error 
 	if ok {
 		entry.val = val
 	} else {
-		entry = new(StaleCacheEntry)
+		entry = new(staleCacheEntry)
 		sc.cache[key] = entry
 	}
 	for _, opt := range opts {
