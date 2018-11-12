@@ -47,7 +47,7 @@ func SetScanInterval(t time.Duration) staleCacheOpt {
 	}
 }
 
-func SetDeadline(t time.Duration) staleCacheOpt {
+func SetScanDeadline(t time.Duration) staleCacheOpt {
 	return func(s *staleCache) {
 		s.scanDeadline = t
 	}
