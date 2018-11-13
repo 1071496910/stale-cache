@@ -79,8 +79,8 @@ func (sc *staleCache) start() {
 				}
 				i := 0
 				expired := 0
-				for key, val := range sc.cache {
-					if val.hasDeadline && time.Now().After(val.deadline) {
+				for key, val := range sc.expireKey {
+					if time.Now().After(val) {
 						sc.unThreadSafeDel(key)
 						expired++
 					}
