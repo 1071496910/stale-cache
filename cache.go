@@ -21,13 +21,13 @@ type staleCacheOpOpts func(*staleCacheEntry)
 type staleCacheEntry struct {
 	key         interface{}
 	val         interface{}
-	dealine     time.Time
+	deadline    time.Time
 	hasDeadline bool
 }
 
 func WithTimeout(t time.Duration) staleCacheOpOpts {
 	return func(sce *staleCacheEntry) {
-		sce.dealine = time.Now().Add(t)
+		sce.deadline = time.Now().Add(t)
 		sce.hasDeadline = true
 	}
 }
@@ -67,17 +67,20 @@ func (sc *staleCache) start() {
 		for _ = range ticker.C {
 			sc.mtx.Lock()
 			taskStopClock := time.After(sc.scanDeadline)
+			expired := 0
 		scanLoop:
 			for key, val := range sc.cache {
 				select {
 				case <-taskStopClock:
 					break scanLoop
 				default:
-					if val.hasDeadline && time.Now().After(val.dealine) {
+					if val.hasDeadline && time.Now().After(val.deadline) {
+						expired++
 						delete(sc.cache, key)
 					}
 				}
 			}
+			fmt.Println("expired num:", expired)
 			sc.mtx.Unlock()
 		}
 	}()
@@ -128,7 +131,7 @@ func (sc *staleCache) Get(key interface{}) (interface{}, error) {
 	defer sc.mtx.Unlock()
 
 	if entry, ok := sc.cache[key]; ok {
-		if (!entry.hasDeadline) || time.Now().Before(entry.dealine) {
+		if (!entry.hasDeadline) || time.Now().Before(entry.deadline) {
 			return entry.val, nil
 		}
 		delete(sc.cache, key)
