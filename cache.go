@@ -12,8 +12,8 @@ var (
 )
 
 const (
-	scanDeadline time.Duration = 10 * time.Microsecond
-	scanInterval time.Duration = 10 * time.Millisecond
+	scanDeadline time.Duration = 1 * time.Millisecond
+	scanInterval time.Duration = 100 * time.Millisecond
 )
 
 type staleCacheOpOpts func(*staleCacheEntry)
@@ -21,13 +21,13 @@ type staleCacheOpOpts func(*staleCacheEntry)
 type staleCacheEntry struct {
 	key         interface{}
 	val         interface{}
-	dealine     time.Time
+	deadline    time.Time
 	hasDeadline bool
 }
 
 func WithTimeout(t time.Duration) staleCacheOpOpts {
 	return func(sce *staleCacheEntry) {
-		sce.dealine = time.Now().Add(t)
+		sce.deadline = time.Now().Add(t)
 		sce.hasDeadline = true
 	}
 }
@@ -56,6 +56,7 @@ func SetScanDeadline(t time.Duration) staleCacheOpt {
 type staleCache struct {
 	cache        map[interface{}]*staleCacheEntry
 	mtx          sync.Mutex
+	expireKey    map[interface{}]time.Time
 	scanInterval time.Duration
 	scanDeadline time.Duration
 }
@@ -66,18 +67,36 @@ func (sc *staleCache) start() {
 		ticker := time.NewTicker(sc.scanInterval)
 		for _ = range ticker.C {
 			sc.mtx.Lock()
+			startTime := time.Now()
 			taskStopClock := time.After(sc.scanDeadline)
+			sampleSize := 20
 		scanLoop:
-			for key, val := range sc.cache {
+			for {
 				select {
 				case <-taskStopClock:
 					break scanLoop
 				default:
-					if val.hasDeadline && time.Now().After(val.dealine) {
-						delete(sc.cache, key)
+				}
+				i := 0
+				expired := 0
+				for key, val := range sc.cache {
+					if val.hasDeadline && time.Now().After(val.deadline) {
+						sc.unThreadSafeDel(key)
+						expired++
+					}
+					i++
+					if i >= sampleSize {
+						break
 					}
 				}
+				if expired == 0 || sampleSize/expired > 4 {
+					break scanLoop
+				}
+				sampleSize *= 2
+				//fmt.Println("dealing scan expired is :", expired)
+
 			}
+			fmt.Println("scan spend :", time.Since(startTime))
 			sc.mtx.Unlock()
 		}
 	}()
@@ -86,6 +105,7 @@ func (sc *staleCache) start() {
 func NewStaleCache(opts ...staleCacheOpt) StaleCache {
 	sc := &staleCache{
 		cache:        make(map[interface{}]*staleCacheEntry),
+		expireKey:    make(map[interface{}]time.Time),
 		scanInterval: scanInterval,
 		scanDeadline: scanDeadline,
 	}
@@ -108,6 +128,9 @@ func (sc *staleCache) Add(key, val interface{}, opts ...staleCacheOpOpts) error 
 		opt(entry)
 	}
 	sc.cache[key] = entry
+	if entry.hasDeadline {
+		sc.expireKey[key] = entry.deadline
+	}
 
 	return nil
 }
@@ -117,10 +140,15 @@ func (sc *staleCache) Del(key interface{}) error {
 	defer sc.mtx.Unlock()
 
 	if _, ok := sc.cache[key]; ok {
-		delete(sc.cache, key)
+		sc.unThreadSafeDel(key)
 		return nil
 	}
 	return ErrNotExist
+}
+
+func (sc *staleCache) unThreadSafeDel(key interface{}) {
+	delete(sc.cache, key)
+	delete(sc.expireKey, key)
 }
 
 func (sc *staleCache) Get(key interface{}) (interface{}, error) {
@@ -128,10 +156,10 @@ func (sc *staleCache) Get(key interface{}) (interface{}, error) {
 	defer sc.mtx.Unlock()
 
 	if entry, ok := sc.cache[key]; ok {
-		if (!entry.hasDeadline) || time.Now().Before(entry.dealine) {
+		if (!entry.hasDeadline) || time.Now().Before(entry.deadline) {
 			return entry.val, nil
 		}
-		delete(sc.cache, key)
+		sc.unThreadSafeDel(key)
 		return nil, ErrKeyTimeout
 	}
 	return nil, ErrNotExist
