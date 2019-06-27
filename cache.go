@@ -16,7 +16,7 @@ const (
 	scanInterval time.Duration = 100 * time.Millisecond
 )
 
-type staleCacheOpOpts func(*staleCacheEntry)
+type staleCacheOpOpt func(*staleCacheEntry)
 
 type staleCacheEntry struct {
 	key         interface{}
@@ -25,15 +25,22 @@ type staleCacheEntry struct {
 	hasDeadline bool
 }
 
-func WithTimeout(t time.Duration) staleCacheOpOpts {
+func WithTimeout(t time.Duration) staleCacheOpOpt {
 	return func(sce *staleCacheEntry) {
 		sce.deadline = time.Now().Add(t)
 		sce.hasDeadline = true
 	}
 }
 
+func WithDeadline(t time.Time) staleCacheOpOpt {
+	return func(sce *staleCacheEntry) {
+		sce.deadline = t
+		sce.hasDeadline = true
+	}
+}
+
 type StaleCache interface {
-	Add(key, val interface{}, opts ...staleCacheOpOpts) error
+	Add(key, val interface{}, opts ...staleCacheOpOpt) error
 	Del(key interface{}) error
 	Get(key interface{}) (interface{}, error)
 	Len() int
@@ -70,6 +77,7 @@ func (sc *staleCache) start() {
 			startTime := time.Now()
 			taskStopClock := time.After(sc.scanDeadline)
 			sampleSize := 20
+			expiredCount := 0
 		scanLoop:
 			for {
 				select {
@@ -93,10 +101,11 @@ func (sc *staleCache) start() {
 					break scanLoop
 				}
 				sampleSize *= 2
-				//fmt.Println("dealing scan expired is :", expired)
+				fmt.Println("dealing scan expired is :", expired)
+				expiredCount += expired
 
 			}
-			fmt.Println("scan spend :", time.Since(startTime))
+			fmt.Println("scan spend :", time.Since(startTime), "deal expired key:", expiredCount)
 			sc.mtx.Unlock()
 		}
 	}()
@@ -116,7 +125,7 @@ func NewStaleCache(opts ...staleCacheOpt) StaleCache {
 	return sc
 }
 
-func (sc *staleCache) Add(key, val interface{}, opts ...staleCacheOpOpts) error {
+func (sc *staleCache) Add(key, val interface{}, opts ...staleCacheOpOpt) error {
 	sc.mtx.Lock()
 	defer sc.mtx.Unlock()
 
